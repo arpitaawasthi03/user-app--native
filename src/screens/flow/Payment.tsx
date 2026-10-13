@@ -25,8 +25,9 @@ export default function Payment({ service }: PaymentProps) {
   const { push } = useNav();
   const { state, itemTotal, placeOrder, placeById, showToast } = useApp();
   const [selectedMethod, setSelectedMethod] = useState<
-    "wallet" | "upi" | "card"
+    "wallet" | "cod" | "upi" | "card"
   >("wallet");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const total = itemTotal(service);
   const bill = computeBill(service, total, state.promos[service] ?? null);
@@ -42,24 +43,40 @@ export default function Payment({ service }: PaymentProps) {
       ? `${placeById(state.ride.dropId)?.area ?? "Gomti Nagar, Lucknow"}`
       : `${currentPlace.label} · ${currentPlace.line}`;
 
-  const handlePay = () => {
-    const res = placeOrder(service, selectedMethod, destination);
-    if (!res.ok) {
-      showToast(res.error);
-      return;
+  const handlePay = async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const res = await placeOrder(service, selectedMethod, destination);
+      if (!res.ok) {
+        showToast(res.error);
+        setIsSubmitting(false);
+        return;
+      }
+      setIsSubmitting(false);
+      push({ name: "status", orderId: res.order.id, view: "confirmed" });
+    } catch (err: any) {
+      showToast(err?.message || "Order creation failed.");
+      setIsSubmitting(false);
     }
-    push({ name: "status", orderId: res.order.id, view: "confirmed" });
   };
 
   const methods: {
-    id: "wallet" | "upi" | "card";
+    id: "wallet" | "cod" | "upi" | "card";
     label: string;
     sub: string;
+    badge?: string;
   }[] = [
     {
       id: "wallet",
       label: "RoadRider Wallet",
       sub: `Available balance ${rupees(state.wallet.balance)}`,
+    },
+    {
+      id: "cod",
+      label: "Cash on Delivery (COD)",
+      sub: "Pay with cash or UPI on doorstep arrival",
+      badge: "ACTIVE",
     },
     {
       id: "upi",
@@ -104,7 +121,7 @@ export default function Payment({ service }: PaymentProps) {
 
         {/* Payment Methods */}
         <View style={styles.methodsList}>
-          {methods.map(({ id, label, sub }) => {
+          {methods.map(({ id, label, sub, badge }) => {
             const isSelected = selectedMethod === id;
             return (
               <TouchableOpacity
@@ -123,13 +140,20 @@ export default function Payment({ service }: PaymentProps) {
                   ]}
                 >
                   <Icon
-                    name="card"
+                    name={id === "wallet" ? "wallet" : "card"}
                     size={20}
                     color={isSelected ? colors.accent : colors.muted}
                   />
                 </View>
                 <View style={styles.methodInfo}>
-                  <Text style={styles.methodLabel}>{label}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Text style={styles.methodLabel}>{label}</Text>
+                    {badge && (
+                      <View style={styles.codBadge}>
+                        <Text style={styles.codBadgeText}>{badge}</Text>
+                      </View>
+                    )}
+                  </View>
                   <Text style={styles.methodSub}>{sub}</Text>
                 </View>
                 <View style={styles.radioOuter}>
@@ -139,6 +163,16 @@ export default function Payment({ service }: PaymentProps) {
             );
           })}
         </View>
+
+        {/* COD Reassurance Banner */}
+        {selectedMethod === "cod" && (
+          <View style={styles.codReassuranceCard}>
+            <Icon name="check" size={16} color="#22c55e" />
+            <Text style={styles.codReassuranceText}>
+              Cash on Delivery enabled. You can pay with cash or scan delivery partner UPI upon arrival.
+            </Text>
+          </View>
+        )}
 
         {/* Insufficient Wallet Warning */}
         {hasInsufficientWallet && (
@@ -161,10 +195,11 @@ export default function Payment({ service }: PaymentProps) {
         )}
 
         {/* Gateway notice */}
-        {selectedMethod !== "wallet" && (
+        {(selectedMethod === "upi" || selectedMethod === "card") && (
           <Text style={styles.gatewayNotice}>
-            Note: External gateways require backend API keys. To complete this
-            booking, please select{" "}
+            Note: External gateways require backend merchant API keys. To place this
+            order now, please select{" "}
+            <Text style={{ fontWeight: "700" }}>Cash on Delivery (COD)</Text> or{" "}
             <Text style={{ fontWeight: "700" }}>RoadRider Wallet</Text>.
           </Text>
         )}
@@ -172,7 +207,15 @@ export default function Payment({ service }: PaymentProps) {
 
       {/* Pay CTA */}
       <SafeAreaView style={styles.bottomBar} edges={["bottom"]}>
-        <Button onPress={handlePay}>Pay {rupees(bill.toPay)}</Button>
+        <Button onPress={handlePay} disabled={isSubmitting}>
+          {isSubmitting
+            ? "Placing order..."
+            : selectedMethod === "cod"
+            ? `Place order · COD (${rupees(bill.toPay)})`
+            : selectedMethod === "wallet"
+            ? `Pay ${rupees(bill.toPay)} · Wallet`
+            : `Pay ${rupees(bill.toPay)}`}
+        </Button>
       </SafeAreaView>
     </View>
   );
@@ -321,6 +364,35 @@ const styles = StyleSheet.create({
     marginTop: 14,
     lineHeight: 16,
     paddingHorizontal: 4,
+  },
+  codBadge: {
+    backgroundColor: "#dcfce7",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  codBadgeText: {
+    color: "#15803d",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  codReassuranceCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f0fdf4",
+    borderWidth: 1,
+    borderColor: "#bbf7d0",
+    borderRadius: 14,
+    padding: 12,
+    marginTop: 14,
+    gap: 8,
+  },
+  codReassuranceText: {
+    fontSize: 11,
+    color: "#166534",
+    flex: 1,
+    lineHeight: 16,
   },
   bottomBar: {
     position: "absolute",

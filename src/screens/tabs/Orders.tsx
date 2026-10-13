@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -19,8 +19,12 @@ import { colors, radii } from "../../theme/tokens";
 
 export default function Orders() {
   const { push } = useNav();
-  const { state } = useApp();
+  const { state, syncOrders } = useApp();
   const [tab, setTab] = useState<"active" | "past">("active");
+
+  useEffect(() => {
+    syncOrders?.();
+  }, []);
 
   const activeOrders = state.orders.filter((o) => o.status < 3);
   const pastOrders = state.orders.filter((o) => o.status >= 3);

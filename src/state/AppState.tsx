@@ -20,6 +20,7 @@ import {
   type Service,
 } from "../data/demo";
 import { computeBill, type Bill } from "../lib/pricing";
+import { createBackendOrder, fetchOrdersFromBackend } from "../lib/orderService";
 
 /* ------------------------------------------------------------------ types */
 
@@ -231,7 +232,7 @@ export type PendingAction =
     };
 
 type PlaceOrderResult =
-  | { ok: true; order: Order }
+  | { ok: true; order: Order; dbOrderId?: string }
   | { ok: false; error: string };
 
 type Ctx = {
@@ -269,9 +270,10 @@ type Ctx = {
   // orders
   placeOrder: (
     service: Service,
-    method: "wallet" | "upi" | "card",
+    method: "wallet" | "upi" | "card" | "cod",
     destination: string
-  ) => PlaceOrderResult;
+  ) => Promise<PlaceOrderResult>;
+  syncOrders: () => Promise<void>;
   setOrderStatus: (id: string, status: number) => void;
   rateOrder: (id: string, rating: number) => void;
   // wallet
@@ -322,6 +324,24 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       })
       .finally(() => {
         isLoaded.current = true;
+        // Sync orders with backend on load
+        fetchOrdersFromBackend().then((backendOrders) => {
+          if (backendOrders && backendOrders.length > 0) {
+            setState((s) => {
+              const existingIds = new Set(s.orders.map((o) => o.id));
+              const newOrders = backendOrders.filter(
+                (bo) => !existingIds.has(bo.id)
+              );
+              if (newOrders.length > 0) {
+                return {
+                  ...s,
+                  orders: [...newOrders, ...s.orders],
+                };
+              }
+              return s;
+            });
+          }
+        });
       });
     return () => {
       mounted = false;
@@ -528,18 +548,18 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           else delete promos[service];
           return { ...s, promos };
         }),
-      placeOrder: (service, method, destination) => {
+      placeOrder: async (service, method, destination) => {
         const total = itemTotal(service);
         const bill = computeBill(service, total, state.promos[service] ?? null);
         if (total <= 0) return { ok: false, error: "Your cart is empty." };
-        if (method !== "wallet") {
+        if (method !== "wallet" && method !== "cod") {
           return {
             ok: false,
             error:
-              "Online payments aren't connected in this build. Please pay with RoadRider Wallet.",
+              "Online payments aren't connected in this build. Please pay with Cash on Delivery (COD) or RoadRider Wallet.",
           };
         }
-        if (state.wallet.balance < bill.toPay) {
+        if (method === "wallet" && state.wallet.balance < bill.toPay) {
           return {
             ok: false,
             error: `Insufficient wallet balance. Add ₹${
@@ -550,8 +570,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         let title = "";
         let subtitle = "";
         let lines: OrderLine[] = [];
+        let storeId: string | null = null;
         if (service === "food" || service === "grocery") {
           const cart = state.carts[service];
+          storeId = cart.storeId;
           lines = cart.lines.map((l) => ({
             name: l.name,
             qty: l.qty,
@@ -590,39 +612,60 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             },
           ];
         }
-        const order: Order = {
-          id: `RR${Math.floor(10500 + Math.random() * 89000)}`,
+
+        // Persist order to Supabase backend (orders & order_items)
+        const backendRes = await createBackendOrder({
           service,
+          paymentMethod: method,
+          destination,
+          total,
+          promoCode: state.promos[service] ?? null,
+          lines,
+          storeId,
+          customerProfile: state.profile,
+        });
+
+        if (!backendRes.ok || !backendRes.order) {
+          return {
+            ok: false,
+            error: backendRes.error || "Failed to place order.",
+          };
+        }
+
+        const order: Order = {
+          ...backendRes.order,
           title,
           subtitle,
-          lines,
-          bill,
-          payment: "RoadRider Wallet",
-          destination,
-          status: 0,
-          createdAt: Date.now(),
         };
+
         setState((s) => {
           let next: PersistedState = {
             ...s,
             orders: [order, ...s.orders],
-            wallet: {
-              ...s.wallet,
-              balance: s.wallet.balance - bill.toPay,
-              txns: [
-                {
-                  id: `t${Date.now()}`,
-                  icon: serviceMeta[service].icon,
-                  label: title,
-                  when: Date.now(),
-                  amount: -bill.toPay,
-                },
-                ...s.wallet.txns,
-              ],
-            },
             usedPromos: bill.promo ? [...s.usedPromos, bill.promo] : s.usedPromos,
             promos: { ...s.promos, [service]: undefined },
           };
+
+          if (method === "wallet") {
+            next = {
+              ...next,
+              wallet: {
+                ...s.wallet,
+                balance: s.wallet.balance - bill.toPay,
+                txns: [
+                  {
+                    id: `t${Date.now()}`,
+                    icon: serviceMeta[service].icon,
+                    label: title,
+                    when: Date.now(),
+                    amount: -bill.toPay,
+                  },
+                  ...s.wallet.txns,
+                ],
+              },
+            };
+          }
+
           if (service === "food" || service === "grocery")
             next = {
               ...next,
@@ -634,7 +677,25 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             next = { ...next, courier: { ...next.courier, dropId: null } };
           return notify(next, `${title}: booking confirmed`);
         });
-        return { ok: true, order };
+        return { ok: true, order, dbOrderId: backendRes.dbOrderId };
+      },
+      syncOrders: async () => {
+        const backendOrders = await fetchOrdersFromBackend();
+        if (backendOrders && backendOrders.length > 0) {
+          setState((s) => {
+            const existingIds = new Set(s.orders.map((o) => o.id));
+            const newOrders = backendOrders.filter(
+              (bo) => !existingIds.has(bo.id)
+            );
+            if (newOrders.length > 0) {
+              return {
+                ...s,
+                orders: [...newOrders, ...s.orders],
+              };
+            }
+            return s;
+          });
+        }
       },
       setOrderStatus: (id, status) =>
         setState((s) => ({
