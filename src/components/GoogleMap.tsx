@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { Platform, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE } from "react-native-maps";
 import {
   DARK_MAP_STYLE,
   DEFAULT_CENTER,
@@ -118,24 +118,77 @@ export default function GoogleMap({
     return coords;
   }, [origin, destination, driver]);
 
+  const mapProvider =
+    Platform.OS === "android" ? PROVIDER_GOOGLE : PROVIDER_DEFAULT;
+
+  const fitMapToPoints = (animated = true) => {
+    const coordsToFit: { latitude: number; longitude: number }[] = [];
+    if (origin) coordsToFit.push({ latitude: origin.lat, longitude: origin.lng });
+    if (destination)
+      coordsToFit.push({ latitude: destination.lat, longitude: destination.lng });
+    if (driver) coordsToFit.push({ latitude: driver.lat, longitude: driver.lng });
+
+    if (coordsToFit.length >= 2) {
+      mapRef.current?.fitToCoordinates(coordsToFit, {
+        edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
+        animated,
+      });
+    } else if (coordsToFit.length === 1) {
+      mapRef.current?.animateToRegion(
+        {
+          latitude: coordsToFit[0].latitude,
+          longitude: coordsToFit[0].longitude,
+          latitudeDelta: 0.02,
+          longitudeDelta: 0.02,
+        },
+        animated ? 500 : 0
+      );
+    }
+  };
+
+  useEffect(() => {
+    fitMapToPoints(true);
+  }, [
+    origin?.lat,
+    origin?.lng,
+    destination?.lat,
+    destination?.lng,
+    driver?.lat,
+    driver?.lng,
+  ]);
+
   return (
     <View style={[styles.container, style]}>
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFill}
-        provider={PROVIDER_DEFAULT}
+        provider={mapProvider}
         initialRegion={region}
         scrollEnabled={interactive}
         zoomEnabled={interactive}
         pitchEnabled={interactive}
         rotateEnabled={false}
         customMapStyle={DARK_MAP_STYLE}
+        onMapReady={() => {
+          if (__DEV__) {
+            console.log(
+              `[RoadRider:GoogleMap] MapView ready on ${Platform.OS} with provider ${mapProvider}`
+            );
+          }
+          fitMapToPoints(false);
+        }}
+        onMapLoaded={() => {
+          if (__DEV__) {
+            console.log("[RoadRider:GoogleMap] MapView tiles loaded successfully");
+          }
+        }}
       >
         {/* Origin / Store Marker */}
         {origin && (
           <Marker
             coordinate={{ latitude: origin.lat, longitude: origin.lng }}
             title={origin.label || "Pickup"}
+            tracksViewChanges={false}
           >
             <View style={styles.originMarker}>
               <View style={styles.originDot} />
@@ -148,6 +201,7 @@ export default function GoogleMap({
           <Marker
             coordinate={{ latitude: destination.lat, longitude: destination.lng }}
             title={destination.label || "Destination"}
+            tracksViewChanges={false}
           >
             <View style={styles.destinationMarker}>
               <View style={styles.destinationPin} />
@@ -160,6 +214,7 @@ export default function GoogleMap({
           <Marker
             coordinate={{ latitude: driver.lat, longitude: driver.lng }}
             title={driver.label || "RoadRider Driver"}
+            tracksViewChanges={false}
           >
             <View style={styles.driverMarker}>
               <Text style={styles.driverEmoji}>🚗</Text>
